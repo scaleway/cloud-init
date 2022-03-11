@@ -304,6 +304,7 @@ class DataSourceScaleway(sources.DataSource):
 
 datasources = [
     (DataSourceScaleway, (sources.DEP_FILESYSTEM,)),
+    (DataSourceScaleway, (sources.DEP_FILESYSTEM, sources.DEP_NETWORK)),
 ]
 
 
