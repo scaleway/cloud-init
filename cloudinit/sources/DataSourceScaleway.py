@@ -34,6 +34,7 @@ from cloudinit.net.dhcp import EphemeralDHCPv4, NoDHCPLeaseError
 LOG = logging.getLogger(__name__)
 
 DS_BASE_URL = "http://169.254.42.42"
+SCW_METADATA_AUTH_TOKEN = "X-Metadata-Auth-Token"
 
 BUILTIN_DS_CONFIG = {
     "metadata_url": DS_BASE_URL + "/conf?format=json",
@@ -90,7 +91,7 @@ class SourceAddressAdapter(requests.adapters.HTTPAdapter):
         )
 
 
-def query_data_api_once(api_address, timeout, requests_session):
+def query_data_api_once(api_address, headers, headers_redact, timeout, requests_session):
     """
     Retrieve user data or vendor data.
 
@@ -110,6 +111,8 @@ def query_data_api_once(api_address, timeout, requests_session):
         resp = url_helper.readurl(
             api_address,
             data=None,
+            headers=headers,
+            headers_redact=headers_redact,
             timeout=timeout,
             # It's the caller's responsability to recall this function in case
             # of exception. Don't let url_helper.readurl() retry by itself.
@@ -130,7 +133,7 @@ def query_data_api_once(api_address, timeout, requests_session):
         raise
 
 
-def query_data_api(api_type, api_address, retries, timeout):
+def query_data_api(api_type, api_address, headers, headers_redact, retries, timeout):
     """Get user or vendor data.
 
     Handle the retrying logic in case the source port is used.
@@ -152,7 +155,7 @@ def query_data_api(api_type, api_address, retries, timeout):
                 SourceAddressAdapter(source_address=("0.0.0.0", port)),
             )
             data = query_data_api_once(
-                api_address, timeout=timeout, requests_session=requests_session
+                api_address, headers=headers, headers_redact=headers_redact, timeout=timeout, requests_session=requests_session
             )
             LOG.debug("%s-data downloaded", api_type)
             return data
@@ -188,9 +191,15 @@ class DataSourceScaleway(sources.DataSource):
             ]
         )
 
-        self.metadata_address = self.ds_cfg["metadata_url"]
-        self.userdata_address = self.ds_cfg["userdata_url"]
-        self.vendordata_address = self.ds_cfg["vendordata_url"]
+        self.metadata_address = self.ds_cfg.get("custom_metadata_url", "{base_url}/conf?format=json".format(base_url=self.ds_cfg.get("base_url", DS_BASE_URL)))
+        self.userdata_address = self.ds_cfg.get("custom_userdata_url", "{base_url}/user_data/cloud-init".format(base_url=self.ds_cfg.get("base_url", DS_BASE_URL)))
+        self.vendordata_address = self.ds_cfg.get("custom_vendordata_url", "{base_url}/vendor_data/cloud-init".format(base_url=self.ds_cfg.get("base_url", DS_BASE_URL)))
+        self.headers_redact = None
+        # Scaleway Baremetal product use X-Metadata-Auth-Token
+        authToken = self.ds_cfg.get("token", None)
+        if authToken is not None:
+            self.headers_redact = SCW_METADATA_AUTH_TOKEN
+            self.headers = {SCW_METADATA_AUTH_TOKEN: authToken}
 
         self.retries = int(self.ds_cfg.get("retries", DEF_MD_RETRIES))
         self.timeout = int(self.ds_cfg.get("timeout", DEF_MD_TIMEOUT))
@@ -199,15 +208,15 @@ class DataSourceScaleway(sources.DataSource):
 
     def _crawl_metadata(self):
         resp = url_helper.readurl(
-            self.metadata_address, timeout=self.timeout, retries=self.retries
+            self.metadata_address, headers=self.headers, headers_redact=self.headers_redact, timeout=self.timeout, retries=self.retries
         )
         self.metadata = json.loads(util.decode_binary(resp.contents))
 
         self.userdata_raw = query_data_api(
-            "user-data", self.userdata_address, self.retries, self.timeout
+            "user-data", self.userdata_address, self.headers, self.headers_redact, self.retries, self.timeout
         )
         self.vendordata_raw = query_data_api(
-            "vendor-data", self.vendordata_address, self.retries, self.timeout
+            "vendor-data", self.vendordata_address, self.headers, self.headers_redact, self.retries, self.timeout
         )
 
     def _get_data(self):
