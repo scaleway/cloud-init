@@ -195,6 +195,7 @@ class DataSourceScaleway(sources.DataSource):
         self.userdata_address = self.ds_cfg.get("custom_userdata_url", "{base_url}/user_data/cloud-init".format(base_url=self.ds_cfg.get("base_url", DS_BASE_URL)))
         self.vendordata_address = self.ds_cfg.get("custom_vendordata_url", "{base_url}/vendor_data/cloud-init".format(base_url=self.ds_cfg.get("base_url", DS_BASE_URL)))
         self.headers_redact = None
+        self.headers = None
         # Scaleway Baremetal product use X-Metadata-Auth-Token
         authToken = self.ds_cfg.get("token", None)
         if authToken is not None:
