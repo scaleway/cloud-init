@@ -208,6 +208,10 @@ class DataSourceScaleway(sources.DataSource):
         self._network_config = sources.UNSET
 
     def _crawl_metadata(self):
+        # Stay backward compatible with classes w/o these attributes
+        self.headers = getattr(self, 'headers', None)
+        self.headers_redact = getattr(self, 'headers_redact', None)
+
         resp = url_helper.readurl(
             self.metadata_address, headers=self.headers, headers_redact=self.headers_redact, timeout=self.timeout, retries=self.retries
         )
