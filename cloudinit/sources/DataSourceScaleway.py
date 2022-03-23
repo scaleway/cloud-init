@@ -260,14 +260,15 @@ class DataSourceScaleway(sources.DataSource):
         netcfg = {"type": "physical", "name": "%s" % self._fallback_interface}
         subnets = [{"type": "dhcp4"}]
         if 'ipv6' in self.metadata:
-            subnets += [
-                {
-                    "type": "static",
-                    "address": "%s" % self.metadata["ipv6"]["address"],
-                    "gateway": "%s" % self.metadata["ipv6"]["gateway"],
-                    "netmask": "%s" % self.metadata["ipv6"]["netmask"],
-                }
-            ]
+            if self.metadata["ipv6"]:
+                subnets += [
+                    {
+                        "type": "static",
+                        "address": "%s" % self.metadata["ipv6"]["address"],
+                        "gateway": "%s" % self.metadata["ipv6"]["gateway"],
+                        "netmask": "%s" % self.metadata["ipv6"]["netmask"],
+                    }
+                ]
         netcfg["subnets"] = subnets
         self._network_config = {"version": 1, "config": [netcfg]}
         return self._network_config
