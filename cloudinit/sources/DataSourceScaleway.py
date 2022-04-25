@@ -27,8 +27,9 @@ from requests.packages.urllib3.poolmanager import PoolManager
 
 from cloudinit import dmi
 from cloudinit import log as logging
-from cloudinit import net, sources, url_helper, util
+from cloudinit import net, sources, url_helper, subp, util
 from cloudinit.event import EventScope, EventType
+from cloudinit.net import activators, read_sys_net_int
 from cloudinit.net.dhcp import EphemeralDHCPv4, NoDHCPLeaseError
 
 LOG = logging.getLogger(__name__)
@@ -204,8 +205,17 @@ class DataSourceScaleway(sources.DataSource):
 
         self.retries = int(self.ds_cfg.get("retries", DEF_MD_RETRIES))
         self.timeout = int(self.ds_cfg.get("timeout", DEF_MD_TIMEOUT))
-        self._fallback_interface = None
         self._network_config = sources.UNSET
+
+    @property
+    def fallback_interface(self):
+        if self._fallback_interface is None:
+            self._fallback_interface = get_first_connected_interface()
+            if self._fallback_interface is None:
+                LOG.warning(
+                    "Did not find a fallback interface on %s.", self.cloud_name
+                )
+        return self._fallback_interface
 
     def _crawl_metadata(self):
         # Stay backward compatible with classes w/o these attributes
@@ -229,7 +239,7 @@ class DataSourceScaleway(sources.DataSource):
             return False
 
         if self._fallback_interface is None:
-            self._fallback_interface = net.find_fallback_nic()
+            self._fallback_interface = get_first_connected_interface()
         try:
             with EphemeralDHCPv4(self._fallback_interface):
                 util.log_time(
@@ -259,7 +269,7 @@ class DataSourceScaleway(sources.DataSource):
             return self._network_config
 
         if self._fallback_interface is None:
-            self._fallback_interface = net.find_fallback_nic()
+            self._fallback_interface = get_first_connected_interface()
 
         netcfg = {"type": "physical", "name": "%s" % self._fallback_interface}
         subnets = [{"type": "dhcp4"}]
@@ -316,3 +326,24 @@ datasources = [
 
 def get_datasource_list(depends):
     return sources.list_from_depends(depends, datasources)
+
+# Get first connected interface
+def get_first_connected_interface():
+    for iface in net.find_candidate_nics():
+        # ensure interface is UP
+        try:
+            cmd = ["ip", "link", "set", "dev", iface, "up"]
+            LOG.debug("Running command %s ...", cmd)
+            subp.subp(cmd, capture=False)
+        except ProcessExecutionError as err:
+            LOG.debug("command %s failed: %s ... skip to next interface", cmd, err)
+            continue
+
+        # ensure interface is connected
+        carrier = read_sys_net_int(iface, "carrier")
+        if not carrier:
+            continue
+
+        return iface
+
+    return None
