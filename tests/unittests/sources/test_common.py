@@ -69,6 +69,7 @@ DEFAULT_NETWORK = [
     OVF.DataSourceOVFNet,
     UpCloud.DataSourceUpCloud,
     VMware.DataSourceVMware,
+    Scaleway.DataSourceScaleway,
 ]
 
 
