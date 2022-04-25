@@ -16,7 +16,6 @@ Modules
 .. automodule:: cloudinit.config.cc_debug
 .. automodule:: cloudinit.config.cc_disable_ec2_metadata
 .. automodule:: cloudinit.config.cc_disk_setup
-.. automodule:: cloudinit.config.cc_emit_upstart
 .. automodule:: cloudinit.config.cc_fan
 .. automodule:: cloudinit.config.cc_final_message
 .. automodule:: cloudinit.config.cc_foo
@@ -64,4 +63,5 @@ Modules
 .. automodule:: cloudinit.config.cc_users_groups
 .. automodule:: cloudinit.config.cc_write_files
 .. automodule:: cloudinit.config.cc_yum_add_repo
+.. automodule:: cloudinit.config.cc_zypper_add_repo
 .. vi: textwidth=79

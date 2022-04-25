@@ -19,6 +19,7 @@ import pytest
 import yaml
 
 from cloudinit import importer, subp, util
+from cloudinit.subp import SubpResult
 from tests.unittests import helpers
 from tests.unittests.helpers import CiTestCase
 
@@ -376,13 +377,16 @@ class TestSymlink(CiTestCase):
         tmpd = self.tmp_dir()
         link = self.tmp_path("link", tmpd)
         target = self.tmp_path("target", tmpd)
+        target2 = self.tmp_path("target2", tmpd)
         util.write_file(target, "hello")
+        util.write_file(target2, "hello2")
 
         util.sym_link(target, link)
         self.assertTrue(os.path.exists(link))
 
-        util.sym_link(target, link, force=True)
+        util.sym_link(target2, link, force=True)
         self.assertTrue(os.path.exists(link))
+        self.assertEqual("hello2", util.load_file(link))
 
     def test_sym_link_dangling_link(self):
         tmpd = self.tmp_dir()
@@ -590,7 +594,7 @@ class TestBlkid(CiTestCase):
 
     @mock.patch("cloudinit.subp.subp")
     def test_functional_blkid(self, m_subp):
-        m_subp.return_value = (self.blkid_out.format(**self.ids), "")
+        m_subp.return_value = SubpResult(self.blkid_out.format(**self.ids), "")
         self.assertEqual(self._get_expected(), util.blkid())
         m_subp.assert_called_with(
             ["blkid", "-o", "full"], capture=True, decode="replace"
@@ -599,7 +603,7 @@ class TestBlkid(CiTestCase):
     @mock.patch("cloudinit.subp.subp")
     def test_blkid_no_cache_uses_no_cache(self, m_subp):
         """blkid should turn off cache if disable_cache is true."""
-        m_subp.return_value = (self.blkid_out.format(**self.ids), "")
+        m_subp.return_value = SubpResult(self.blkid_out.format(**self.ids), "")
         self.assertEqual(self._get_expected(), util.blkid(disable_cache=True))
         m_subp.assert_called_with(
             ["blkid", "-o", "full", "-c", "/dev/null"],
@@ -1982,6 +1986,33 @@ class TestMultiLog(helpers.FilesystemMockingTestCase):
         util.multi_log("something", fallback_to_stdout=False)
         self.assertEqual("", self.stdout.getvalue())
 
+    @mock.patch(
+        "cloudinit.util.write_to_console",
+        mock.Mock(side_effect=OSError("Failed to write to console")),
+    )
+    def test_logs_go_to_stdout_if_writing_to_console_fails_and_fallback_true(
+        self,
+    ):
+        self._createConsole(self.root)
+        util.multi_log("something", fallback_to_stdout=True)
+        self.assertEqual(
+            "Failed to write to /dev/console\nsomething",
+            self.stdout.getvalue(),
+        )
+
+    @mock.patch(
+        "cloudinit.util.write_to_console",
+        mock.Mock(side_effect=OSError("Failed to write to console")),
+    )
+    def test_logs_go_nowhere_if_writing_to_console_fails_and_fallback_false(
+        self,
+    ):
+        self._createConsole(self.root)
+        util.multi_log("something", fallback_to_stdout=False)
+        self.assertEqual(
+            "Failed to write to /dev/console\n", self.stdout.getvalue()
+        )
+
     def test_logs_go_to_log_if_given(self):
         log = mock.MagicMock()
         logged_string = "something very important"
@@ -2358,13 +2389,17 @@ class TestFindDevs:
 
     @mock.patch("cloudinit.subp.subp")
     def test_find_devs_with_openbsd(self, m_subp):
-        m_subp.return_value = ("cd0:,sd0:630d98d32b5d3759,sd1:,fd0:", "")
+        m_subp.return_value = SubpResult(
+            "cd0:,sd0:630d98d32b5d3759,sd1:,fd0:", ""
+        )
         devlist = util.find_devs_with_openbsd()
         assert devlist == ["/dev/cd0a", "/dev/sd1a", "/dev/sd1i"]
 
     @mock.patch("cloudinit.subp.subp")
     def test_find_devs_with_openbsd_with_criteria(self, m_subp):
-        m_subp.return_value = ("cd0:,sd0:630d98d32b5d3759,sd1:,fd0:", "")
+        m_subp.return_value = SubpResult(
+            "cd0:,sd0:630d98d32b5d3759,sd1:,fd0:", ""
+        )
         devlist = util.find_devs_with_openbsd(criteria="TYPE=iso9660")
         assert devlist == ["/dev/cd0a", "/dev/sd1a", "/dev/sd1i"]
 
@@ -2412,29 +2447,29 @@ class TestFindDevs:
     @mock.patch("cloudinit.subp.subp")
     def test_find_devs_with_netbsd(self, m_subp, criteria, expected_devlist):
         side_effect_values = [
-            ("ld0 dk0 dk1 cd0", ""),
-            (
+            SubpResult("ld0 dk0 dk1 cd0", ""),
+            SubpResult(
                 "mscdlabel: CDIOREADTOCHEADER: "
                 "Inappropriate ioctl for device\n"
                 "track (ctl=4) at sector 0\n"
                 "disklabel not written\n",
                 "",
             ),
-            (
+            SubpResult(
                 "mscdlabel: CDIOREADTOCHEADER: "
                 "Inappropriate ioctl for device\n"
                 "track (ctl=4) at sector 0\n"
                 "disklabel not written\n",
                 "",
             ),
-            (
+            SubpResult(
                 "mscdlabel: CDIOREADTOCHEADER: "
                 "Inappropriate ioctl for device\n"
                 "track (ctl=4) at sector 0\n"
                 "disklabel not written\n",
                 "",
             ),
-            (
+            SubpResult(
                 "track (ctl=4) at sector 0\n"
                 'ISO filesystem, label "config-2", '
                 "creation time: 2020/03/31 17:29\n"
@@ -2462,7 +2497,9 @@ class TestFindDevs:
     def test_find_devs_with_dragonflybsd(
         self, m_subp, criteria, expected_devlist
     ):
-        m_subp.return_value = ("md2 md1 cd0 vbd0 acd0 vn3 vn2 vn1 vn0 md0", "")
+        m_subp.return_value = SubpResult(
+            "md2 md1 cd0 vbd0 acd0 vn3 vn2 vn1 vn0 md0", ""
+        )
         devlist = util.find_devs_with_dragonflybsd(criteria=criteria)
         assert devlist == expected_devlist
 

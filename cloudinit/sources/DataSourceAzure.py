@@ -34,12 +34,12 @@ from cloudinit.sources.helpers import netlink
 from cloudinit.sources.helpers.azure import (
     DEFAULT_REPORT_FAILURE_USER_VISIBLE_MESSAGE,
     DEFAULT_WIRESERVER_ENDPOINT,
-    WALinuxAgentShim,
     azure_ds_reporter,
     azure_ds_telemetry_reporter,
     build_minimal_ovf,
     dhcp_log_cb,
     get_boot_telemetry,
+    get_ip_from_lease_value,
     get_metadata_from_fabric,
     get_system_info,
     is_byte_swapped,
@@ -209,7 +209,7 @@ def get_hv_netvsc_macs_normalized() -> List[str]:
 
 def execute_or_debug(cmd, fail_ret=None) -> str:
     try:
-        return subp.subp(cmd)[0]  # type: ignore
+        return subp.subp(cmd).stdout  # type: ignore
     except subp.ProcessExecutionError:
         LOG.debug("Failed to execute: %s", " ".join(cmd))
         return fail_ret
@@ -429,10 +429,8 @@ class DataSourceAzure(sources.DataSource):
 
                 # Update wireserver IP from DHCP options.
                 if "unknown-245" in lease:
-                    self._wireserver_endpoint = (
-                        WALinuxAgentShim.get_ip_from_lease_value(
-                            lease["unknown-245"]
-                        )
+                    self._wireserver_endpoint = get_ip_from_lease_value(
+                        lease["unknown-245"]
                     )
 
     @azure_ds_telemetry_reporter
@@ -532,7 +530,7 @@ class DataSourceAzure(sources.DataSource):
         # If we require IMDS metadata, try harder to obtain networking, waiting
         # for at least 20 minutes.  Otherwise only wait 5 minutes.
         requires_imds_metadata = bool(self._iso_dev) or not ovf_is_accessible
-        timeout_minutes = 5 if requires_imds_metadata else 20
+        timeout_minutes = 20 if requires_imds_metadata else 5
         try:
             self._setup_ephemeral_networking(timeout_minutes=timeout_minutes)
         except NoDHCPLeaseError:
@@ -927,70 +925,24 @@ class DataSourceAzure(sources.DataSource):
             raise
 
     @azure_ds_telemetry_reporter
-    def wait_for_link_up(self, ifname):
-        """In cases where the link state is still showing down after a nic is
-        hot-attached, we can attempt to bring it up by forcing the hv_netvsc
-        drivers to query the link state by unbinding and then binding the
-        device. This function attempts infinitely until the link is up,
-        because we cannot proceed further until we have a stable link."""
-
-        if self.distro.networking.try_set_link_up(ifname):
-            report_diagnostic_event(
-                "The link %s is already up." % ifname, logger_func=LOG.info
-            )
-            return
-
-        LOG.debug("Attempting to bring %s up", ifname)
-
-        attempts = 0
-        LOG.info("Unbinding and binding the interface %s", ifname)
-        while True:
-            device_id = net.read_sys_net(ifname, "device/device_id")
-            if device_id is False or not isinstance(device_id, str):
-                raise RuntimeError("Unable to read device ID: %s" % device_id)
-            devicename = device_id.strip("{}")
-            util.write_file(
-                "/sys/bus/vmbus/drivers/hv_netvsc/unbind", devicename
-            )
-            util.write_file(
-                "/sys/bus/vmbus/drivers/hv_netvsc/bind", devicename
-            )
-
-            attempts = attempts + 1
+    def wait_for_link_up(
+        self, ifname: str, retries: int = 100, retry_sleep: float = 0.1
+    ):
+        for i in range(retries):
             if self.distro.networking.try_set_link_up(ifname):
-                msg = "The link %s is up after %s attempts" % (
-                    ifname,
-                    attempts,
+                report_diagnostic_event(
+                    "The link %s is up." % ifname, logger_func=LOG.info
                 )
-                report_diagnostic_event(msg, logger_func=LOG.info)
-                return
+                break
 
-            if attempts % 10 == 0:
-                msg = "Link is not up after %d attempts to rebind" % attempts
-                report_diagnostic_event(msg, logger_func=LOG.info)
-                LOG.info(msg)
-
-            # It could take some time after rebind for the interface to be up.
-            # So poll for the status for some time before attempting to rebind
-            # again.
-            sleep_duration = 0.5
-            max_status_polls = 20
-            LOG.debug(
-                "Polling %d seconds for primary NIC link up after rebind.",
-                sleep_duration * max_status_polls,
+            if (i + 1) < retries:
+                sleep(retry_sleep)
+        else:
+            report_diagnostic_event(
+                "The link %s is not up after %f seconds, continuing anyways."
+                % (ifname, retries * retry_sleep),
+                logger_func=LOG.info,
             )
-
-            for i in range(0, max_status_polls):
-                if self.distro.networking.is_up(ifname):
-                    msg = (
-                        "After %d attempts to rebind, link is up after "
-                        "polling the link status %d times" % (attempts, i)
-                    )
-                    report_diagnostic_event(msg, logger_func=LOG.info)
-                    LOG.debug(msg)
-                    return
-                else:
-                    sleep(sleep_duration)
 
     @azure_ds_telemetry_reporter
     def _create_report_ready_marker(self):
@@ -1116,22 +1068,16 @@ class DataSourceAzure(sources.DataSource):
         return is_primary, expected_nic_count
 
     @azure_ds_telemetry_reporter
-    def _wait_for_hot_attached_nics(self, nl_sock):
-        """Wait until all the expected nics for the vm are hot-attached.
-        The expected nic count is obtained by requesting the network metadata
-        from IMDS.
-        """
-        LOG.info("Waiting for nics to be hot-attached")
+    def _wait_for_hot_attached_primary_nic(self, nl_sock):
+        """Wait until the primary nic for the vm is hot-attached."""
+        LOG.info("Waiting for primary nic to be hot-attached")
         try:
-            # Wait for nics to be attached one at a time, until we know for
-            # sure that all nics have been attached.
             nics_found = []
             primary_nic_found = False
-            expected_nic_count = -1
 
             # Wait for netlink nic attach events. After the first nic is
             # attached, we are already in the customer vm deployment path and
-            # so eerything from then on should happen fast and avoid
+            # so everything from then on should happen fast and avoid
             # unnecessary delays wherever possible.
             while True:
                 ifname = None
@@ -1162,17 +1108,13 @@ class DataSourceAzure(sources.DataSource):
                 # won't be in primary_nic_found = false state for long.
                 if not primary_nic_found:
                     LOG.info("Checking if %s is the primary nic", ifname)
-                    (
-                        primary_nic_found,
-                        expected_nic_count,
-                    ) = self._check_if_nic_is_primary(ifname)
+                    primary_nic_found, _ = self._check_if_nic_is_primary(
+                        ifname
+                    )
 
-                # Exit criteria: check if we've discovered all nics
-                if (
-                    expected_nic_count != -1
-                    and len(nics_found) >= expected_nic_count
-                ):
-                    LOG.info("Found all the nics for this VM.")
+                # Exit criteria: check if we've discovered primary nic
+                if primary_nic_found:
+                    LOG.info("Found primary nic for this VM.")
                     break
 
         except AssertionError as error:
@@ -1192,7 +1134,7 @@ class DataSourceAzure(sources.DataSource):
             self._report_ready_for_pps()
             self._teardown_ephemeral_networking()
             self._wait_for_nic_detach(nl_sock)
-            self._wait_for_hot_attached_nics(nl_sock)
+            self._wait_for_hot_attached_primary_nic(nl_sock)
         except netlink.NetlinkCreateSocketError as e:
             report_diagnostic_event(str(e), logger_func=LOG.warning)
             raise

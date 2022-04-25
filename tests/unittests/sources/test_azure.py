@@ -50,6 +50,16 @@ def azure_ds(paths):
 
 
 @pytest.fixture
+def mock_wrapping_setup_ephemeral_networking(azure_ds):
+    with mock.patch.object(
+        azure_ds,
+        "_setup_ephemeral_networking",
+        wraps=azure_ds._setup_ephemeral_networking,
+    ) as m:
+        yield m
+
+
+@pytest.fixture
 def mock_azure_helper_readurl():
     with mock.patch(
         "cloudinit.sources.helpers.azure.url_helper.readurl", autospec=True
@@ -2987,12 +2997,14 @@ class TestPreprovisioningHotAttachNics(CiTestCase):
 
     @mock.patch(MOCKPATH + "util.write_file", autospec=True)
     @mock.patch(MOCKPATH + "DataSourceAzure._report_ready")
-    @mock.patch(MOCKPATH + "DataSourceAzure._wait_for_hot_attached_nics")
+    @mock.patch(
+        MOCKPATH + "DataSourceAzure._wait_for_hot_attached_primary_nic"
+    )
     @mock.patch(MOCKPATH + "DataSourceAzure._wait_for_nic_detach")
     def test_detect_nic_attach_reports_ready_and_waits_for_detach(
         self,
         m_detach,
-        m_wait_for_hot_attached_nics,
+        m_wait_for_hot_attached_primary_nic,
         m_report_ready,
         m_writefile,
     ):
@@ -3000,7 +3012,7 @@ class TestPreprovisioningHotAttachNics(CiTestCase):
         dsa = dsaz.DataSourceAzure({}, distro=None, paths=self.paths)
         dsa._wait_for_all_nics_ready()
         self.assertEqual(1, m_report_ready.call_count)
-        self.assertEqual(1, m_wait_for_hot_attached_nics.call_count)
+        self.assertEqual(1, m_wait_for_hot_attached_primary_nic.call_count)
         self.assertEqual(1, m_detach.call_count)
         self.assertEqual(1, m_writefile.call_count)
         m_writefile.assert_called_with(
@@ -3026,7 +3038,8 @@ class TestPreprovisioningHotAttachNics(CiTestCase):
         m_report_ready,
         m_writefile,
     ):
-        """Wait for nic attach if we do not have a fallback interface"""
+        """Wait for nic attach if we do not have a fallback interface.
+        Skip waiting for additional nics after we have found primary"""
         dsa = dsaz.DataSourceAzure({}, distro=None, paths=self.paths)
         lease = {
             "interface": "eth9",
@@ -3057,10 +3070,28 @@ class TestPreprovisioningHotAttachNics(CiTestCase):
         dsa._wait_for_all_nics_ready()
 
         self.assertEqual(1, m_detach.call_count)
-        self.assertEqual(2, m_attach.call_count)
+        # only wait for primary nic
+        self.assertEqual(1, m_attach.call_count)
         # DHCP and network metadata calls will only happen on the primary NIC.
         self.assertEqual(1, m_dhcpv4.call_count)
         self.assertEqual(1, m_imds.call_count)
+        # no call to bring link up on secondary nic
+        self.assertEqual(1, m_link_up.call_count)
+
+        # reset mock to test again with primary nic being eth1
+        m_detach.reset_mock()
+        m_attach.reset_mock()
+        m_dhcpv4.reset_mock()
+        m_link_up.reset_mock()
+        m_attach.side_effect = ["eth0", "eth1"]
+        m_imds.reset_mock()
+        m_imds.side_effect = [{}, md]
+        dsa = dsaz.DataSourceAzure({}, distro=None, paths=self.paths)
+        dsa._wait_for_all_nics_ready()
+        self.assertEqual(1, m_detach.call_count)
+        self.assertEqual(2, m_attach.call_count)
+        self.assertEqual(2, m_dhcpv4.call_count)
+        self.assertEqual(2, m_imds.call_count)
         self.assertEqual(2, m_link_up.call_count)
 
     @mock.patch("cloudinit.url_helper.time.sleep", autospec=True)
@@ -3126,12 +3157,10 @@ class TestPreprovisioningHotAttachNics(CiTestCase):
         dsa.wait_for_link_up("eth0")
         self.assertEqual(1, m_is_link_up.call_count)
 
-    @mock.patch(MOCKPATH + "net.is_up", autospec=True)
-    @mock.patch(MOCKPATH + "util.write_file")
-    @mock.patch("cloudinit.net.read_sys_net", return_value="device-id")
     @mock.patch("cloudinit.distros.networking.LinuxNetworking.try_set_link_up")
+    @mock.patch(MOCKPATH + "sleep")
     def test_wait_for_link_up_checks_link_after_sleep(
-        self, m_try_set_link_up, m_read_sys_net, m_writefile, m_is_up
+        self, m_sleep, m_try_set_link_up
     ):
         """Waiting for link to be up should return immediately if the link is
         already up."""
@@ -3141,50 +3170,10 @@ class TestPreprovisioningHotAttachNics(CiTestCase):
         dsa = dsaz.DataSourceAzure({}, distro=distro, paths=self.paths)
         m_try_set_link_up.return_value = False
 
-        callcount = 0
-
-        def is_up_mock(key):
-            nonlocal callcount
-            if callcount == 0:
-                callcount += 1
-                return False
-            return True
-
-        m_is_up.side_effect = is_up_mock
-
-        with mock.patch("cloudinit.sources.DataSourceAzure.sleep"):
-            dsa.wait_for_link_up("eth0")
-        self.assertEqual(2, m_try_set_link_up.call_count)
-        self.assertEqual(2, m_is_up.call_count)
-
-    @mock.patch(MOCKPATH + "util.write_file")
-    @mock.patch("cloudinit.net.read_sys_net", return_value="device-id")
-    @mock.patch("cloudinit.distros.networking.LinuxNetworking.try_set_link_up")
-    def test_wait_for_link_up_writes_to_device_file(
-        self, m_is_link_up, m_read_sys_net, m_writefile
-    ):
-        """Waiting for link to be up should return immediately if the link is
-        already up."""
-
-        distro_cls = distros.fetch("ubuntu")
-        distro = distro_cls("ubuntu", {}, self.paths)
-        dsa = dsaz.DataSourceAzure({}, distro=distro, paths=self.paths)
-
-        callcount = 0
-
-        def linkup(key):
-            nonlocal callcount
-            if callcount == 0:
-                callcount += 1
-                return False
-            return True
-
-        m_is_link_up.side_effect = linkup
-
         dsa.wait_for_link_up("eth0")
-        self.assertEqual(2, m_is_link_up.call_count)
-        self.assertEqual(1, m_read_sys_net.call_count)
-        self.assertEqual(2, m_writefile.call_count)
+
+        self.assertEqual(100, m_try_set_link_up.call_count)
+        self.assertEqual(99 * [mock.call(0.1)], m_sleep.mock_calls)
 
     @mock.patch(
         "cloudinit.sources.helpers.netlink.create_bound_netlink_socket"
@@ -4034,6 +4023,7 @@ class TestProvisioning:
         mock_util_load_file,
         mock_util_mount_cb,
         mock_util_write_file,
+        mock_wrapping_setup_ephemeral_networking,
     ):
         self.azure_ds = azure_ds
         self.mock_azure_get_metadata_from_fabric = (
@@ -4060,6 +4050,9 @@ class TestProvisioning:
         self.mock_util_load_file = mock_util_load_file
         self.mock_util_mount_cb = mock_util_mount_cb
         self.mock_util_write_file = mock_util_write_file
+        self.mock_wrapping_setup_ephemeral_networking = (
+            mock_wrapping_setup_ephemeral_networking
+        )
 
         self.imds_md = {
             "extended": {"compute": {"ppsType": "None"}},
@@ -4116,6 +4109,9 @@ class TestProvisioning:
         ]
 
         # Verify DHCP is setup once.
+        assert self.mock_wrapping_setup_ephemeral_networking.mock_calls == [
+            mock.call(timeout_minutes=20)
+        ]
         assert self.mock_net_dhcp_maybe_perform_dhcp_discovery.mock_calls == [
             mock.call(None, dsaz.dhcp_log_cb)
         ]
@@ -4203,6 +4199,10 @@ class TestProvisioning:
         ]
 
         # Verify DHCP is setup twice.
+        assert self.mock_wrapping_setup_ephemeral_networking.mock_calls == [
+            mock.call(timeout_minutes=20),
+            mock.call(timeout_minutes=5),
+        ]
         assert self.mock_net_dhcp_maybe_perform_dhcp_discovery.mock_calls == [
             mock.call(None, dsaz.dhcp_log_cb),
             mock.call(None, dsaz.dhcp_log_cb),
@@ -4322,6 +4322,10 @@ class TestProvisioning:
         ]
 
         # Verify DHCP is setup twice.
+        assert self.mock_wrapping_setup_ephemeral_networking.mock_calls == [
+            mock.call(timeout_minutes=20),
+            mock.call(iface="ethAttached1", timeout_minutes=20),
+        ]
         assert self.mock_net_dhcp_maybe_perform_dhcp_discovery.mock_calls == [
             mock.call(None, dsaz.dhcp_log_cb),
             mock.call("ethAttached1", dsaz.dhcp_log_cb),

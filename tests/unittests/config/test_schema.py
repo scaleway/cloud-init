@@ -82,6 +82,13 @@ def get_module_variable(var_name) -> dict:
 
 
 class TestGetSchema:
+    def test_static_schema_file_is_valid(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            get_schema()
+        # Assert no warnings parsing our packaged schema file
+        warnings = [msg for (_, _, msg) in caplog.record_tuples]
+        assert [] == warnings
+
     def test_get_schema_coalesces_known_schema(self):
         """Every cloudconfig module with schema is listed in allOf keyword."""
         schema = get_schema()
@@ -97,20 +104,53 @@ class TestGetSchema:
                 "cc_debug",
                 "cc_disable_ec2_metadata",
                 "cc_disk_setup",
+                "cc_fan",
+                "cc_foo",
+                "cc_final_message",
+                "cc_growpart",
+                "cc_grub_dpkg",
                 "cc_install_hotplug",
                 "cc_keyboard",
+                "cc_keys_to_console",
+                "cc_landscape",
                 "cc_locale",
+                "cc_lxd",
+                "cc_mcollective",
+                "cc_migrator",
+                "cc_mounts",
                 "cc_ntp",
                 "cc_package_update_upgrade_install",
                 "cc_phone_home",
                 "cc_power_state_change",
                 "cc_puppet",
                 "cc_resizefs",
+                "cc_resolv_conf",
+                "cc_rightscale_userdata",
+                "cc_rh_subscription",
+                "cc_rsyslog",
                 "cc_runcmd",
+                "cc_salt_minion",
+                "cc_scripts_per_boot",
+                "cc_scripts_per_instance",
+                "cc_scripts_per_once",
+                "cc_scripts_user",
+                "cc_scripts_vendor",
+                "cc_seed_random",
+                "cc_set_hostname",
+                "cc_set_passwords",
                 "cc_snap",
+                "cc_spacewalk",
+                "cc_ssh_authkey_fingerprints",
+                "cc_ssh_import_id",
+                "cc_ssh",
+                "cc_timezone",
                 "cc_ubuntu_advantage",
                 "cc_ubuntu_drivers",
+                "cc_update_etc_hosts",
+                "cc_update_hostname",
+                "cc_users_groups",
                 "cc_write_files",
+                "cc_yum_add_repo",
                 "cc_zypper_add_repo",
             ]
         ) == sorted(
@@ -130,10 +170,48 @@ class TestGetSchema:
             {"$ref": "#/$defs/cc_debug"},
             {"$ref": "#/$defs/cc_disable_ec2_metadata"},
             {"$ref": "#/$defs/cc_disk_setup"},
+            {"$ref": "#/$defs/cc_fan"},
+            {"$ref": "#/$defs/cc_final_message"},
+            {"$ref": "#/$defs/cc_growpart"},
+            {"$ref": "#/$defs/cc_grub_dpkg"},
+            {"$ref": "#/$defs/cc_install_hotplug"},
+            {"$ref": "#/$defs/cc_keyboard"},
+            {"$ref": "#/$defs/cc_keys_to_console"},
+            {"$ref": "#/$defs/cc_landscape"},
+            {"$ref": "#/$defs/cc_locale"},
+            {"$ref": "#/$defs/cc_lxd"},
+            {"$ref": "#/$defs/cc_mcollective"},
+            {"$ref": "#/$defs/cc_migrator"},
+            {"$ref": "#/$defs/cc_mounts"},
+            {"$ref": "#/$defs/cc_ntp"},
             {"$ref": "#/$defs/cc_package_update_upgrade_install"},
             {"$ref": "#/$defs/cc_phone_home"},
             {"$ref": "#/$defs/cc_power_state_change"},
             {"$ref": "#/$defs/cc_puppet"},
+            {"$ref": "#/$defs/cc_resizefs"},
+            {"$ref": "#/$defs/cc_resolv_conf"},
+            {"$ref": "#/$defs/cc_rh_subscription"},
+            {"$ref": "#/$defs/cc_rsyslog"},
+            {"$ref": "#/$defs/cc_runcmd"},
+            {"$ref": "#/$defs/cc_salt_minion"},
+            {"$ref": "#/$defs/cc_scripts_vendor"},
+            {"$ref": "#/$defs/cc_seed_random"},
+            {"$ref": "#/$defs/cc_set_hostname"},
+            {"$ref": "#/$defs/cc_set_passwords"},
+            {"$ref": "#/$defs/cc_snap"},
+            {"$ref": "#/$defs/cc_spacewalk"},
+            {"$ref": "#/$defs/cc_ssh_authkey_fingerprints"},
+            {"$ref": "#/$defs/cc_ssh_import_id"},
+            {"$ref": "#/$defs/cc_ssh"},
+            {"$ref": "#/$defs/cc_timezone"},
+            {"$ref": "#/$defs/cc_ubuntu_advantage"},
+            {"$ref": "#/$defs/cc_ubuntu_drivers"},
+            {"$ref": "#/$defs/cc_update_etc_hosts"},
+            {"$ref": "#/$defs/cc_update_hostname"},
+            {"$ref": "#/$defs/cc_users_groups"},
+            {"$ref": "#/$defs/cc_write_files"},
+            {"$ref": "#/$defs/cc_yum_add_repo"},
+            {"$ref": "#/$defs/cc_zypper_add_repo"},
         ]
         found_subschema_defs = []
         legacy_schema_keys = []
@@ -144,22 +222,9 @@ class TestGetSchema:
                 legacy_schema_keys.extend(subschema["properties"].keys())
 
         assert expected_subschema_defs == found_subschema_defs
-        # This list will dwindle as we move legacy schema to new $defs
-        assert [
-            "drivers",
-            "keyboard",
-            "locale",
-            "locale_configfile",
-            "ntp",
-            "resize_rootfs",
-            "runcmd",
-            "snap",
-            "ubuntu_advantage",
-            "updates",
-            "write_files",
-            "write_files",
-            "zypper",
-        ] == sorted(legacy_schema_keys)
+        # This list should remain empty unless we induct new modules with
+        # legacy schema attributes defined within the cc_module.
+        assert [] == sorted(legacy_schema_keys)
 
 
 class TestLoadDoc:
@@ -171,7 +236,7 @@ class TestLoadDoc:
         "module_name",
         (
             "cc_apt_pipelining",  # new style composite schema file
-            "cc_zypper_add_repo",  # legacy sub-schema defined in module
+            "cc_install_hotplug",  # legacy sub-schema defined in module
         ),
     )
     def test_report_docs_for_legacy_and_consolidated_schema(self, module_name):
@@ -341,6 +406,32 @@ class TestCloudConfigExamples:
         """
         schema = get_schema()
         config_load = safe_load(example)
+        # cloud-init-schema is permissive of additionalProperties at the
+        # top-level.
+        # To validate specific schemas against known documented examples
+        # we need to only define the specific module schema and supply
+        # strict=True.
+        # TODO(Drop to pop/update once full schema is strict)
+        schema.pop("allOf")
+        schema.update(schema["$defs"][schema_id])
+        schema["additionalProperties"] = False
+        # Some module examples reference keys defined in multiple schemas
+        supplemental_schemas = {
+            "cc_ubuntu_advantage": ["cc_power_state_change"],
+            "cc_update_hostname": ["cc_set_hostname"],
+            "cc_users_groups": ["cc_ssh_import_id"],
+            "cc_disk_setup": ["cc_mounts"],
+        }
+        for supplement_id in supplemental_schemas.get(schema_id, []):
+            supplemental_props = dict(
+                [
+                    (key, value)
+                    for key, value in schema["$defs"][supplement_id][
+                        "properties"
+                    ].items()
+                ]
+            )
+            schema["properties"].update(supplemental_props)
         validate_cloudconfig_schema(config_load, schema, strict=True)
 
 
@@ -415,31 +506,29 @@ class ValidateCloudConfigFileTest(CiTestCase):
         )
 
 
-class GetSchemaDocTest(CiTestCase):
+class TestSchemaDocMarkdown:
     """Tests for get_meta_doc."""
 
-    def setUp(self):
-        super(GetSchemaDocTest, self).setUp()
-        self.required_schema = {
-            "title": "title",
-            "description": "description",
-            "id": "id",
-            "name": "name",
-            "frequency": "frequency",
-            "distros": ["debian", "rhel"],
-        }
-        self.meta: MetaSchema = {
-            "title": "title",
-            "description": "description",
-            "id": "id",
-            "name": "name",
-            "frequency": "frequency",
-            "distros": ["debian", "rhel"],
-            "examples": [
-                'ex1:\n    [don\'t, expand, "this"]',
-                "ex2: true",
-            ],
-        }
+    required_schema = {
+        "title": "title",
+        "description": "description",
+        "id": "id",
+        "name": "name",
+        "frequency": "frequency",
+        "distros": ["debian", "rhel"],
+    }
+    meta: MetaSchema = {
+        "title": "title",
+        "description": "description",
+        "id": "id",
+        "name": "name",
+        "frequency": "frequency",
+        "distros": ["debian", "rhel"],
+        "examples": [
+            'ex1:\n    [don\'t, expand, "this"]',
+            "ex2: true",
+        ],
+    }
 
     def test_get_meta_doc_returns_restructured_text(self):
         """get_meta_doc returns restructured text for a cloudinit schema."""
@@ -457,48 +546,138 @@ class GetSchemaDocTest(CiTestCase):
         )
 
         doc = get_meta_doc(self.meta, full_schema)
-        self.assertEqual(
+        assert (
             dedent(
                 """
-                name
-                ----
-                **Summary:** title
+            name
+            ----
+            **Summary:** title
 
-                description
+            description
 
-                **Internal name:** ``id``
+            **Internal name:** ``id``
 
-                **Module frequency:** frequency
+            **Module frequency:** frequency
 
-                **Supported distros:** debian, rhel
+            **Supported distros:** debian, rhel
 
-                **Config schema**:
-                    **prop1:** (array of integer) prop-description
+            **Config schema**:
+                **prop1:** (array of integer) prop-description
 
-                **Examples**::
+            **Examples**::
 
-                    ex1:
-                        [don't, expand, "this"]
-                    # --- Example2 ---
-                    ex2: true
-            """
-            ),
-            doc,
+                ex1:
+                    [don't, expand, "this"]
+                # --- Example2 ---
+                ex2: true
+        """
+            )
+            == doc
         )
 
     def test_get_meta_doc_handles_multiple_types(self):
         """get_meta_doc delimits multiple property types with a '/'."""
         schema = {"properties": {"prop1": {"type": ["string", "integer"]}}}
-        self.assertIn(
-            "**prop1:** (string/integer)", get_meta_doc(self.meta, schema)
+        assert "**prop1:** (string/integer)" in get_meta_doc(self.meta, schema)
+
+    def test_references_are_flattened_in_schema_docs(self):
+        """get_meta_doc flattens and renders full schema definitions."""
+        schema = {
+            "$defs": {
+                "flattenit": {
+                    "type": ["object", "string"],
+                    "description": "Objects support the following keys:",
+                    "patternProperties": {
+                        "^.+$": {
+                            "label": "<opaque_label>",
+                            "description": "List of cool strings",
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                        }
+                    },
+                }
+            },
+            "properties": {"prop1": {"$ref": "#/$defs/flattenit"}},
+        }
+        assert (
+            dedent(
+                """\
+            **prop1:** (string/object) Objects support the following keys:
+
+                    **<opaque_label>:** (array of string) List of cool strings
+            """
+            )
+            in get_meta_doc(self.meta, schema)
         )
 
-    def test_get_meta_doc_handles_enum_types(self):
+    @pytest.mark.parametrize(
+        "sub_schema,expected",
+        (
+            (
+                {"enum": [True, False, "stuff"]},
+                "**prop1:** (``true``/``false``/``stuff``)",
+            ),
+            # When type: string and enum, document enum values
+            (
+                {"type": "string", "enum": ["a", "b"]},
+                "**prop1:** (``a``/``b``)",
+            ),
+        ),
+    )
+    def test_get_meta_doc_handles_enum_types(self, sub_schema, expected):
         """get_meta_doc converts enum types to yaml and delimits with '/'."""
-        schema = {"properties": {"prop1": {"enum": [True, False, "stuff"]}}}
-        self.assertIn(
-            "**prop1:** (true/false/stuff)", get_meta_doc(self.meta, schema)
-        )
+        schema = {"properties": {"prop1": sub_schema}}
+        assert expected in get_meta_doc(self.meta, schema)
+
+    @pytest.mark.parametrize(
+        "schema,expected",
+        (
+            (  # Hide top-level keys like 'properties'
+                {
+                    "hidden": ["properties"],
+                    "properties": {
+                        "p1": {"type": "string"},
+                        "p2": {"type": "boolean"},
+                    },
+                    "patternProperties": {
+                        "^.*$": {
+                            "type": "string",
+                            "label": "label2",
+                        }
+                    },
+                },
+                dedent(
+                    """
+                **Config schema**:
+                    **label2:** (string)
+                """
+                ),
+            ),
+            (  # Hide nested individual keys with a bool
+                {
+                    "properties": {
+                        "p1": {"type": "string", "hidden": True},
+                        "p2": {"type": "boolean"},
+                    }
+                },
+                dedent(
+                    """
+                **Config schema**:
+                    **p2:** (boolean)
+                """
+                ),
+            ),
+        ),
+    )
+    def test_get_meta_doc_hidden_hides_specific_properties_from_docs(
+        self, schema, expected
+    ):
+        """Docs are hidden for any property in the hidden list.
+
+        Useful for hiding deprecated key schema.
+        """
+        assert expected in get_meta_doc(self.meta, schema)
 
     def test_get_meta_doc_handles_nested_oneof_property_types(self):
         """get_meta_doc describes array items oneOf declarations in type."""
@@ -512,9 +691,41 @@ class GetSchemaDocTest(CiTestCase):
                 }
             }
         }
-        self.assertIn(
-            "**prop1:** (array of (string)/(integer))",
-            get_meta_doc(self.meta, schema),
+        assert "**prop1:** (array of (string/integer))" in get_meta_doc(
+            self.meta, schema
+        )
+
+    def test_get_meta_doc_handles_types_as_list(self):
+        """get_meta_doc renders types which have a list value."""
+        schema = {
+            "properties": {
+                "prop1": {
+                    "type": ["boolean", "array"],
+                    "items": {
+                        "oneOf": [{"type": "string"}, {"type": "integer"}]
+                    },
+                }
+            }
+        }
+        assert (
+            "**prop1:** (boolean/array of (string/integer))"
+            in get_meta_doc(self.meta, schema)
+        )
+
+    def test_get_meta_doc_handles_flattening_defs(self):
+        """get_meta_doc renders $defs."""
+        schema = {
+            "$defs": {
+                "prop1object": {
+                    "type": "object",
+                    "properties": {"subprop": {"type": "string"}},
+                }
+            },
+            "properties": {"prop1": {"$ref": "#/$defs/prop1object"}},
+        }
+        assert (
+            "**prop1:** (object)\n\n        **subprop:** (string)\n"
+            in get_meta_doc(self.meta, schema)
         )
 
     def test_get_meta_doc_handles_string_examples(self):
@@ -535,21 +746,21 @@ class GetSchemaDocTest(CiTestCase):
                 },
             }
         )
-        self.assertIn(
+        assert (
             dedent(
                 """
-                **Config schema**:
-                    **prop1:** (array of integer) prop-description
+            **Config schema**:
+                **prop1:** (array of integer) prop-description
 
-                **Examples**::
+            **Examples**::
 
-                    ex1:
-                        [don't, expand, "this"]
-                    # --- Example2 ---
-                    ex2: true
+                ex1:
+                    [don't, expand, "this"]
+                # --- Example2 ---
+                ex2: true
             """
-            ),
-            get_meta_doc(self.meta, full_schema),
+            )
+            in get_meta_doc(self.meta, full_schema)
         )
 
     def test_get_meta_doc_properly_parse_description(self):
@@ -575,21 +786,21 @@ class GetSchemaDocTest(CiTestCase):
             }
         }
 
-        self.assertIn(
+        assert (
             dedent(
                 """
-                **Config schema**:
-                    **p1:** (string) This item has the following options:
+            **Config schema**:
+                **p1:** (string) This item has the following options:
 
-                            - option1
-                            - option2
-                            - option3
+                        - option1
+                        - option2
+                        - option3
 
-                    The default value is option1
+                The default value is option1
 
-            """
-            ),
-            get_meta_doc(self.meta, schema),
+        """
+            )
+            in get_meta_doc(self.meta, schema)
         )
 
     def test_get_meta_doc_raises_key_errors(self):
@@ -607,9 +818,9 @@ class GetSchemaDocTest(CiTestCase):
         for key in self.meta:
             invalid_meta = copy(self.meta)
             invalid_meta.pop(key)
-            with self.assertRaises(KeyError) as context_mgr:
+            with pytest.raises(KeyError) as context_mgr:
                 get_meta_doc(invalid_meta, schema)
-            self.assertIn(key, str(context_mgr.exception))
+            assert key in str(context_mgr.value)
 
     def test_label_overrides_property_name(self):
         """get_meta_doc overrides property name with label."""
@@ -644,7 +855,7 @@ class GetSchemaDocTest(CiTestCase):
         assert "**label1:** (string)" in meta_doc
         assert "**label2:** (string" in meta_doc
         assert "**prop_no_label:** (string)" in meta_doc
-        assert "Each item in **array_label** list" in meta_doc
+        assert "Each object in **array_label** list" in meta_doc
 
         assert "prop1" not in meta_doc
         assert ".*" not in meta_doc
